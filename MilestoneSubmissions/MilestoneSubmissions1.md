@@ -1,4 +1,4 @@
-# Lab 8: Project Proposal - Roommate-Tracker
+# Lab 8: Project Proposal - FairShare
 
 ### 1. Team Number
 001
