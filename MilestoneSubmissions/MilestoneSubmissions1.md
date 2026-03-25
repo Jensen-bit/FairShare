@@ -41,7 +41,8 @@ We will conduct progress checks and updates 2-3 days a week, communicating on Di
 * **Weekly TA Meeting:** We will be meeting with our TA weekly on Tuesday around 7:15 pm using Zoom. 
 
 ### 12. Use Case Diagram
-TODO
+<img width="1184" height="1186" alt="image" src="https://github.com/user-attachments/assets/2d21f3f3-e01d-45b2-bca4-4a2e51fb4783" />
+
 
 ### 13. Wireframes
 TODO
