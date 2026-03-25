@@ -1,5 +1,5 @@
 # Meeting Log: March 24, 2026
-**Attendance:** Elias Villalobos, [Other Members]
+**Attendance:** Elias, Brandon, Brennan, Jensen, Cole
 
 ### Decisions Made
 1. Approved "Roommate-Tracker" as our official project idea.
