@@ -1,14 +1,5 @@
 # Roommate-Tracker
-A web application built to streamline shared living for college students.
-
-## Features
-- Shared Chore Tracking
-- Real-time Grocery Lists
-- Household Announcements
-- Integrated Expense Management
-
-## Tech Stack
-- **Frontend:** HTML/CSS/JS
-- **Backend:** Node.js
-- **Database:** PostgreSQL
-- **Environment:** Docker
+Weekly Questions
+1) what did you do
+2) challenges during implementations
+3) what are you planning for next week
