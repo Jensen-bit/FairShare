@@ -45,4 +45,9 @@ We will conduct progress checks and updates 2-3 days a week, communicating on Di
 
 
 ### 13. Wireframes
-TODO
+<img width="1232" height="1354" alt="image" src="https://github.com/user-attachments/assets/79b38252-b15f-4eb0-b447-15c63f5de5cf" />
+<img width="2052" height="1358" alt="image" src="https://github.com/user-attachments/assets/4de746d2-9e52-49a4-90d5-471db5ddbc20" />
+<img width="2046" height="1204" alt="image" src="https://github.com/user-attachments/assets/c6f839ad-5202-4f54-9862-d826c2c2c475" />
+
+
+
