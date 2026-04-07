@@ -1,0 +1,29 @@
+<div class="container mt-4">
+  <h2 class="mb-4">Current Balances With Roommates</h2>
+
+  {{#if balances.length}}
+    <div class="row">
+      {{#each balances}}
+        <div class="col-md-6 col-lg-4 mb-3">
+          <div class="card shadow-sm">
+            <div class="card-body">
+              <h5 class="card-title">{{this.roommate_name}}</h5>
+
+              {{#if this.is_zero}}
+                <p class="card-text text-secondary fw-bold mb-0">
+                  $0.00 — Settled up
+                </p>
+              {{else}}
+                <p class="card-text fw-bold mb-0 {{this.color_class}}">
+                  {{this.display_text}}
+                </p>
+              {{/if}}
+            </div>
+          </div>
+        </div>
+      {{/each}}
+    </div>
+  {{else}}
+    <p>No roommate balances found yet.</p>
+  {{/if}}
+</div>
