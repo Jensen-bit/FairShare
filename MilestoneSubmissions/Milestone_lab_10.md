@@ -7,8 +7,10 @@
 - Application under test: FairShare roommate expense tracking app
 - User acceptance testers:
   - Brennan Long, student user
-  - Teammate 1, student roommate user
-  - Teammate 2, student roommate user
+  - Jensen Trempe, student user
+  - Elias Villalobos, student user
+  - Brandon Aitken, student user
+  - Cole, student user
 
 ## Feature 1: User Registration
 
