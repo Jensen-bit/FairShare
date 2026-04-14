@@ -1,2 +1,6 @@
 node_modules/
 .env
+ProjectSourceCode/node_modules/
+ProjectSourceCode/.env
+ProjectSourceCode/temp
+.DS_Store
