@@ -1,63 +1,203 @@
 const express = require('express');
-const app = express();
-const { sendExpenseEmail } = require('./src/services/emailService');
-
-app.use(express.json()); 
-app.use(express.urlencoded({ extended: true }));
-
+const bodyParser = require('body-parser');
 const pgp = require('pg-promise')();
-const dbConfig = {
-  host: 'db',
+const session = require('express-session');
+const exphbs = require('express-handlebars');
+const bcrypt = require('bcryptjs');
+const { sendExpenseEmail } = require('./src/services/emailService'); 
+require('dotenv').config();
+
+const app = express();
+
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// View Engine
+app.engine('hbs', exphbs.engine({ extname: '.hbs' }));
+app.set('view engine', 'hbs');
+app.set('views', __dirname + '/views');
+
+// Session Setup
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || 'super duper secret!',
+    resave: false,
+    saveUninitialized: false
+  })
+);
+
+// Global user variable for templates
+app.use((req, res, next) => {
+  res.locals.currentUser = req.session.user || null;
+  next();
+});
+
+// Database Setup
+const db = pgp({
+  host: process.env.POSTGRES_HOST || 'db',
   port: 5432,
   database: process.env.POSTGRES_DB,
   user: process.env.POSTGRES_USER,
-  password: process.env.POSTGRES_PASSWORD,
-};
-const db = pgp(dbConfig);
+  password: process.env.POSTGRES_PASSWORD
+});
 
-db.connect()
-  .then(obj => {
-    console.log('Database connection successful');
-    obj.done();
-  })
-  .catch(error => {
-    console.log('ERROR:', error.message || error);
+// Test Environment Login Bypass
+if (process.env.NODE_ENV === 'test') {
+  app.use((req, res, next) => {
+    if (!req.session.user) {
+      req.session.user = {
+        user_id: 1,
+        full_name: 'Test User'
+      };
+    }
+    next();
   });
+}
+
+app.get('/login', (req, res) => {
+  if (req.session.user) {
+    return res.redirect('/balances');
+  }
+
+  res.render('pages/login', {
+    title: 'Login',
+    error: req.query.error || null
+  });
+});
+
+app.post('/login', async (req, res) => {
+  const email = req.body.email ? req.body.email.trim().toLowerCase() : '';
+  const password = req.body.password ? req.body.password.trim() : '';
+
+  if (!email || !password) {
+    return res.status(400).render('pages/login', {
+      title: 'Login',
+      error: 'Email and password are required.'
+    });
+  }
+
+  try {
+    const user = await db.oneOrNone(
+      `SELECT user_id, full_name, email, password FROM users WHERE LOWER(email) = $1`,
+      [email]
+    );
+
+    if (!user) {
+      return res.status(401).render('pages/login', {
+        title: 'Login',
+        error: 'Invalid email or password.'
+      });
+    }
+
+    const storedPassword = user.password || '';
+    const passwordMatches = storedPassword.startsWith('$2')
+      ? await bcrypt.compare(password, storedPassword)
+      : password === storedPassword;
+
+    if (!passwordMatches) {
+      return res.status(401).render('pages/login', {
+        title: 'Login',
+        error: 'Invalid email or password.'
+      });
+    }
+
+    req.session.user = {
+      user_id: user.user_id,
+      full_name: user.full_name,
+      email: user.email
+    };
+
+    return res.redirect('/balances');
+  } catch (err) {
+    console.error(err);
+    return res.status(500).render('pages/login', {
+      title: 'Login',
+      error: 'Unable to log in right now.'
+    });
+  }
+});
+
+app.post('/logout', (req, res) => {
+  req.session.destroy(() => {
+    res.redirect('/login');
+  });
+});
+
+app.get('/register', (req, res) => {
+  res.render('pages/register', {
+    title: 'Register'
+  });
+});
+
+app.post('/register', async (req, res) => {
+  const username = req.body.username ? req.body.username.trim() : '';
+  const password = req.body.password ? req.body.password.trim() : '';
+
+  if (!username || !password) {
+    return res.status(400).json({ status: 'error', message: 'Username and password are required.' });
+  }
+
+  try {
+    const hash = await bcrypt.hash(password, 10);
+
+    await db.none(
+      `
+      INSERT INTO users(full_name, email, password)
+      VALUES($1, $2, $3)
+      ON CONFLICT (email) DO UPDATE
+      SET full_name = EXCLUDED.full_name,
+          password = EXCLUDED.password
+      `,
+      [username, `${username}@fairshare.local`, hash]
+    );
+
+    return res.status(200).json({ status: 'success', message: 'Success' });
+  } catch (err) {
+    console.error(err);
+    return res.status(400).json({ status: 'error', message: 'Unable to register user.' });
+  }
+});
+
+app.get('/welcome', (req, res) => {
+  res.json({ status: 'success', message: 'Welcome!' });
+});
+
 
 app.post('/add-expense', async (req, res) => {
-    // splits should be an array of objects: [{user_id: 1, percent: 50}, {user_id: 2, percent: 50}]
     const { amount, note, category, date, group_id, splits } = req.body;
+    
+    // Auth Check
+    if (!req.session.user) {
+        return res.status(401).json({ error: "Unauthorized. Please log in." });
+    }
     const payerId = req.session.user.user_id;
-    const payerUsername = req.session.user.username;
+    const payerName = req.session.user.full_name;
 
     if (!amount || isNaN(amount) || parseFloat(amount) <= 0) {
-        return res.status(400).json({ 
-            success: false, 
-            message: "Amount must be a positive number." 
-        });
+        return res.status(400).json({ success: false, message: "Amount must be a positive number." });
     }
 
     try {
         await db.tx(async t => {
-            // add expense
+            // Save main expense (Using 'paid_by' and 'description' to match partner schema)
             const expense = await t.one(
-                `INSERT INTO expenses (amount, note, category, expense_date, added_by, group_id) 
+                `INSERT INTO expenses (amount, description, category, expense_date, paid_by, group_id) 
                  VALUES ($1, $2, $3, $4, $5, $6) RETURNING expense_id`,
                 [amount, note, category, date || new Date(), payerId, group_id]
             );
 
-            // split total amount based on percentage share
+            // Save splits (Using 'expense_participants' and 'is_paid' to match partner schema)
             const splitQueries = splits.map(s => {
                 const amountOwed = (amount * (s.percent / 100)).toFixed(2);
                 return t.none(
-                    `INSERT INTO expense_splits (expense_id, user_id, amount_owed, share_percentage) 
-                     VALUES ($1, $2, $3, $4)`,
-                    [expense.expense_id, s.user_id, amountOwed, s.percent]
+                    `INSERT INTO expense_participants (expense_id, user_id, amount_owed, is_paid) 
+                     VALUES ($1, $2, $3, FALSE)`,
+                    [expense.expense_id, s.user_id, amountOwed]
                 );
             });
             await t.batch(splitQueries);
 
-            // get group member emails from database to send notifications to
+            // Find group members
             const emailQuery = `
                 SELECT email FROM users 
                 JOIN users_to_groups ON users.user_id = users_to_groups.user_id
@@ -65,20 +205,310 @@ app.post('/add-expense', async (req, res) => {
             `;
             const roommates = await t.any(emailQuery, [group_id, payerId]);
 
-            // send notifications
+            // Send Emails
             const emailPromises = roommates.map(rm => 
-                sendExpenseEmail(rm.email, amount, payerUsername, note)
+                sendExpenseEmail(rm.email, amount, payerName, note)
             );
             await Promise.all(emailPromises);
         });
         
-        res.status(200).json({ message: "Expense added, balances updated, and roommates notified!" });
+        res.status(200).json({ message: "Expense added and balances updated!" });
     } catch (error) {
         console.error(error);
         res.status(500).json({ error: "Could not process expense" });
     }
 });
 
-app.listen(3000, '0.0.0.0', () => {
-  console.log('Server is listening on port 3000');
+app.get('/balances', async (req, res) => {
+  try {
+    if (!req.session.user) {
+      return res.redirect('/login');
+    }
+
+    const currentUserId = req.session.user.user_id;
+
+    const query = `
+      WITH paid_by_me AS (
+        SELECT
+          ep.user_id AS roommate_id,
+          SUM(ep.amount_owed) AS amount
+        FROM expenses e
+        JOIN expense_participants ep ON e.expense_id = ep.expense_id
+        WHERE e.paid_by = $1
+          AND ep.user_id <> $1
+          AND ep.is_paid = FALSE
+        GROUP BY ep.user_id
+      ),
+      i_owe_them AS (
+        SELECT
+          e.paid_by AS roommate_id,
+          SUM(ep.amount_owed) AS amount
+        FROM expenses e
+        JOIN expense_participants ep ON e.expense_id = ep.expense_id
+        WHERE ep.user_id = $1
+          AND e.paid_by <> $1
+          AND ep.is_paid = FALSE
+        GROUP BY e.paid_by
+      ),
+      combined AS (
+        SELECT
+          u.user_id AS roommate_id,
+          u.full_name AS roommate_name,
+          COALESCE(pbm.amount, 0) - COALESCE(iot.amount, 0) AS net_balance
+        FROM users u
+        LEFT JOIN paid_by_me pbm ON u.user_id = pbm.roommate_id
+        LEFT JOIN i_owe_them iot ON u.user_id = iot.roommate_id
+        WHERE u.user_id <> $1
+      )
+      SELECT roommate_id, roommate_name, ROUND(net_balance::numeric, 2) AS net_balance
+      FROM combined
+      ORDER BY roommate_name;
+    `;
+
+    const rows = await db.any(query, [currentUserId]);
+
+    const balances = rows.map((row) => {
+      const amount = Number(row.net_balance);
+
+      if (amount > 0) {
+        return {
+          roommate_id: row.roommate_id,
+          roommate_name: row.roommate_name,
+          net_balance: amount,
+          color_class: 'text-success',
+          is_zero: false,
+          display_text: `${row.roommate_name} owes you $${amount.toFixed(2)}`
+        };
+      }
+
+      if (amount < 0) {
+        return {
+          roommate_id: row.roommate_id,
+          roommate_name: row.roommate_name,
+          net_balance: amount,
+          color_class: 'text-danger',
+          is_zero: false,
+          display_text: `You owe ${row.roommate_name} $${Math.abs(amount).toFixed(2)}`
+        };
+      }
+
+      return {
+        roommate_id: row.roommate_id,
+        roommate_name: row.roommate_name,
+        net_balance: amount,
+        color_class: 'text-secondary',
+        is_zero: true,
+        display_text: '$0.00'
+      };
+    });
+
+    const unpaidShares = await db.any(`
+      SELECT
+        ep.participant_id,
+        e.description,
+        u.full_name AS owes_user,
+        ep.amount_owed
+      FROM expense_participants ep
+      JOIN expenses e ON ep.expense_id = e.expense_id
+      JOIN users u ON ep.user_id = u.user_id
+      WHERE ep.is_paid = FALSE
+      ORDER BY ep.participant_id;
+    `);
+
+    res.render('pages/balances', { balances, unpaidShares });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Error loading balances page');
+  }
 });
+
+app.post('/mark-paid/:participantId', async (req, res) => {
+  try {
+    const participantId = Number(req.params.participantId);
+
+    if (isNaN(participantId)) {
+      return res.status(400).send('Invalid participant ID');
+    }
+
+    if (!req.session.user) {
+      return res.status(401).send('You must be logged in');
+    }
+
+    const existingShare = await db.oneOrNone(
+      `
+      SELECT participant_id, is_paid
+      FROM expense_participants
+      WHERE participant_id = $1
+      `,
+      [participantId]
+    );
+
+    if (!existingShare) {
+      return res.status(404).send('Expense share not found');
+    }
+
+    if (existingShare.is_paid) {
+      return res.status(400).send('Expense share is already marked as paid');
+    }
+
+    await db.none(
+      `
+      UPDATE expense_participants
+      SET is_paid = TRUE,
+          paid_at = CURRENT_TIMESTAMP,
+          marked_paid_by = $2
+      WHERE participant_id = $1
+      `,
+      [participantId, req.session.user.user_id]
+    );
+
+    res.redirect('/balances');
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Error marking expense as paid');
+  }
+});
+
+app.get('/payment-history', async (req, res) => {
+  try {
+    if (!req.session.user) {
+      return res.redirect('/login');
+    }
+
+    const currentUserId = req.session.user.user_id;
+    const roommateFilter = req.query.roommate ? Number(req.query.roommate) : null;
+
+    let historyQuery = `
+      SELECT
+        ep.participant_id,
+        e.description,
+        e.created_at,
+        ep.paid_at,
+        payer.full_name AS paid_by_name,
+        participant.full_name AS roommate_name,
+        ep.amount_owed
+      FROM expense_participants ep
+      JOIN expenses e ON ep.expense_id = e.expense_id
+      JOIN users payer ON e.paid_by = payer.user_id
+      JOIN users participant ON ep.user_id = participant.user_id
+      WHERE ep.is_paid = TRUE
+        AND (e.paid_by = $1 OR ep.user_id = $1)
+    `;
+
+    const params = [currentUserId];
+
+    if (roommateFilter) {
+      historyQuery += `
+        AND (participant.user_id = $2 OR payer.user_id = $2)
+      `;
+      params.push(roommateFilter);
+    }
+
+    historyQuery += `
+      ORDER BY ep.paid_at DESC NULLS LAST, e.created_at DESC
+    `;
+
+    const history = await db.any(historyQuery, params);
+
+    const formattedHistory = history.map((row) => ({
+      participant_id: row.participant_id,
+      description: row.description,
+      created_at: row.created_at ? new Date(row.created_at).toLocaleDateString() : '',
+      paid_at: row.paid_at ? new Date(row.paid_at).toLocaleDateString() : '',
+      paid_by_name: row.paid_by_name,
+      roommate_name: row.roommate_name,
+      amount_owed: Number(row.amount_owed).toFixed(2)
+    }));
+
+    const roommates = await db.any(
+      `
+      SELECT user_id, full_name
+      FROM users
+      WHERE user_id <> $1
+      ORDER BY full_name
+      `,
+      [currentUserId]
+    );
+
+    res.render('pages/payment-history', {
+      history: formattedHistory,
+      roommates,
+      selectedRoommate: roommateFilter
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Error loading payment history');
+  }
+});
+
+app.get('/payment-history/:participantId', async (req, res) => {
+  try {
+    if (!req.session.user) {
+      return res.redirect('/login');
+    }
+
+    const participantId = Number(req.params.participantId);
+
+    if (isNaN(participantId)) {
+      return res.status(400).send('Invalid participant ID');
+    }
+
+    const details = await db.oneOrNone(
+      `
+      SELECT
+        ep.participant_id,
+        e.expense_id,
+        e.description,
+        e.amount AS total_expense_amount,
+        e.created_at,
+        ep.amount_owed,
+        ep.paid_at,
+        payer.full_name AS paid_by_name,
+        participant.full_name AS roommate_name,
+        marker.full_name AS marked_paid_by_name
+      FROM expense_participants ep
+      JOIN expenses e ON ep.expense_id = e.expense_id
+      JOIN users payer ON e.paid_by = payer.user_id
+      JOIN users participant ON ep.user_id = participant.user_id
+      LEFT JOIN users marker ON ep.marked_paid_by = marker.user_id
+      WHERE ep.participant_id = $1
+        AND ep.is_paid = TRUE
+      `,
+      [participantId]
+    );
+
+    if (!details) {
+      return res.status(404).send('Payment history item not found');
+    }
+
+    const formattedDetails = {
+      participant_id: details.participant_id,
+      expense_id: details.expense_id,
+      description: details.description,
+      total_expense_amount: Number(details.total_expense_amount).toFixed(2),
+      amount_owed: Number(details.amount_owed).toFixed(2),
+      created_at: details.created_at ? new Date(details.created_at).toLocaleString() : '',
+      paid_at: details.paid_at ? new Date(details.paid_at).toLocaleString() : '',
+      paid_by_name: details.paid_by_name,
+      roommate_name: details.roommate_name,
+      marked_paid_by_name: details.marked_paid_by_name || 'Unknown'
+    };
+
+    res.render('pages/payment-history-details', { payment: formattedDetails });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Error loading payment details');
+  }
+});
+
+app.get('/', (req, res) => {
+  res.redirect('/balances');
+});
+
+if (require.main === module) {
+  app.listen(3000, '0.0.0.0', () => {
+    console.log('Server is running on port 3000');
+  });
+}
+
+module.exports = app;
