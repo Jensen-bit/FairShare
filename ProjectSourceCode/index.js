@@ -16,7 +16,9 @@ const hbs = exphbs.create({
   defaultLayout: 'main',
   layoutsDir: __dirname + '/views/layouts',
   helpers: {
-    eq: (a, b) => a === b
+    eq: (a, b) => a === b,
+    json: (context) => JSON.stringify(context),
+    date: (d) => d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''
   }
 });
 
@@ -38,6 +40,30 @@ app.use(
 
 app.use((req, res, next) => {
   res.locals.currentUser = req.session.user || null;
+  next();
+});
+
+// Notification count badge — runs on every request for logged-in users
+app.use(async (req, res, next) => {
+  if (!req.session.user) return next();
+  try {
+    const userId = req.session.user.user_id;
+    const invites = await db.one(
+      `SELECT COUNT(*) AS count FROM group_invites
+       WHERE invited_user_id = $1 AND status = 'pending'`,
+      [userId]
+    );
+    const requests = await db.one(
+      `SELECT COUNT(*) AS count FROM balance_requests br
+       JOIN groups g ON br.group_id = g.group_id
+       WHERE g.created_by = $1 AND br.status = 'pending'`,
+      [userId]
+    );
+    const total = parseInt(invites.count) + parseInt(requests.count);
+    res.locals.notificationCount = total > 0 ? total : null;
+  } catch (_) {
+    res.locals.notificationCount = null;
+  }
   next();
 });
 
@@ -708,6 +734,7 @@ app.get('/groups', async (req, res) => {
       title: 'Groups',
       groupsActive: true,
       groups: groupsWithMembers,
+      currentUserId: currentUserId,
       error: req.query.error || (groupsWithMembers.length === 0 ? null : null),
       success: req.query.success || null
     });
@@ -749,7 +776,7 @@ app.post('/groups/create', async (req, res) => {
   }
 });
 
-// POST /groups/:groupId/add — add a member by email
+// POST /groups/:groupId/add — send a group invite by email
 app.post('/groups/:groupId/add', async (req, res) => {
   try {
     if (!req.session.user) {
@@ -757,6 +784,7 @@ app.post('/groups/:groupId/add', async (req, res) => {
     }
 
     const groupId = Number(req.params.groupId);
+    const currentUserId = req.session.user.user_id;
     const email = req.body.email ? req.body.email.trim().toLowerCase() : '';
 
     if (!email) {
@@ -772,24 +800,39 @@ app.post('/groups/:groupId/add', async (req, res) => {
       return res.redirect(`/groups?error=No+user+found+with+that+email`);
     }
 
-    const existing = await db.oneOrNone(
-      `SELECT * FROM group_members WHERE group_id = $1 AND user_id = $2`,
+    if (user.user_id === currentUserId) {
+      return res.redirect(`/groups?error=You+cannot+invite+yourself`);
+    }
+
+    // Already a member?
+    const alreadyMember = await db.oneOrNone(
+      `SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2`,
       [groupId, user.user_id]
     );
-
-    if (existing) {
+    if (alreadyMember) {
       return res.redirect(`/groups?error=That+person+is+already+in+this+group`);
     }
 
-    await db.none(
-      `INSERT INTO group_members (group_id, user_id) VALUES ($1, $2)`,
+    // Already a pending invite?
+    const alreadyInvited = await db.oneOrNone(
+      `SELECT 1 FROM group_invites WHERE group_id = $1 AND invited_user_id = $2 AND status = 'pending'`,
       [groupId, user.user_id]
     );
+    if (alreadyInvited) {
+      return res.redirect(`/groups?error=An+invite+is+already+pending+for+that+person`);
+    }
 
-    res.redirect('/groups?success=Member+added+to+group');
+    await db.none(
+      `INSERT INTO group_invites (group_id, invited_user_id, invited_by)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (group_id, invited_user_id) DO UPDATE SET status = 'pending', responded_at = NULL`,
+      [groupId, user.user_id, currentUserId]
+    );
+
+    res.redirect(`/groups?success=Invite+sent+to+${encodeURIComponent(user.full_name)}`);
   } catch (err) {
     console.error(err);
-    res.status(500).send('Error adding member');
+    res.status(500).send('Error sending invite');
   }
 });
 
@@ -842,6 +885,594 @@ app.post('/groups/:groupId/delete', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).send('Error deleting group');
+  }
+});
+
+// ── NOTIFICATIONS ──────────────────────────────────────────────────────────────
+
+// GET /notifications — render notifications page
+app.get('/notifications', async (req, res) => {
+  try {
+    if (!req.session.user) return res.redirect('/login');
+    const currentUserId = req.session.user.user_id;
+
+    // Ensure tables exist for running containers
+    await db.none(`
+      CREATE TABLE IF NOT EXISTS group_invites (
+        invite_id SERIAL PRIMARY KEY,
+        group_id INT REFERENCES groups(group_id) ON DELETE CASCADE,
+        invited_user_id INT REFERENCES users(user_id) ON DELETE CASCADE,
+        invited_by INT REFERENCES users(user_id) ON DELETE SET NULL,
+        status VARCHAR(20) DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        responded_at TIMESTAMP,
+        UNIQUE(group_id, invited_user_id)
+      )
+    `);
+
+    // Pending group invites for this user
+    const groupInvites = await db.any(
+      `SELECT gi.invite_id, gi.created_at,
+              to_char(gi.created_at, 'Mon DD, YYYY') AS invite_date,
+              g.group_name,
+              u.full_name AS invited_by_name
+       FROM group_invites gi
+       JOIN groups g ON gi.group_id = g.group_id
+       JOIN users u ON gi.invited_by = u.user_id
+       WHERE gi.invited_user_id = $1 AND gi.status = 'pending'
+       ORDER BY gi.created_at DESC`,
+      [currentUserId]
+    );
+
+    // Pending balance requests for groups this user manages
+    const balanceRequests = await db.any(
+      `SELECT br.request_id, br.amount, br.description,
+              to_char(br.created_at, 'Mon DD, YYYY') AS created_date,
+              g.group_name,
+              req.full_name AS requester_name,
+              tgt.full_name AS target_name
+       FROM balance_requests br
+       JOIN groups g ON br.group_id = g.group_id
+       JOIN users req ON br.requester_id = req.user_id
+       JOIN users tgt ON br.target_user_id = tgt.user_id
+       WHERE g.created_by = $1 AND br.status = 'pending'
+       ORDER BY br.created_at DESC`,
+      [currentUserId]
+    );
+
+    res.render('pages/notifications', {
+      layout: 'main',
+      title: 'Notifications',
+      notificationsActive: true,
+      groupInvites,
+      balanceRequests,
+      hasGroupInvites: groupInvites.length > 0,
+      hasBalanceRequests: balanceRequests.length > 0,
+      hasAny: groupInvites.length > 0 || balanceRequests.length > 0,
+      error: req.query.error || null,
+      success: req.query.success || null
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Error loading notifications');
+  }
+});
+
+// POST /notifications/invite/:id/accept — accept a group invite
+app.post('/notifications/invite/:id/accept', async (req, res) => {
+  try {
+    if (!req.session.user) return res.status(401).send('Login required');
+    const currentUserId = req.session.user.user_id;
+    const inviteId = Number(req.params.id);
+
+    const invite = await db.oneOrNone(
+      `SELECT * FROM group_invites WHERE invite_id = $1 AND invited_user_id = $2 AND status = 'pending'`,
+      [inviteId, currentUserId]
+    );
+
+    if (!invite) {
+      return res.redirect('/notifications?error=Invite+not+found+or+already+responded');
+    }
+
+    // Add to group
+    await db.none(
+      `INSERT INTO group_members (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [invite.group_id, currentUserId]
+    );
+
+    // Mark invite accepted
+    await db.none(
+      `UPDATE group_invites SET status = 'accepted', responded_at = CURRENT_TIMESTAMP
+       WHERE invite_id = $1`,
+      [inviteId]
+    );
+
+    res.redirect('/notifications?success=You+joined+the+group!');
+  } catch (err) {
+    console.error(err);
+    res.redirect('/notifications?error=Failed+to+accept+invite');
+  }
+});
+
+// POST /notifications/invite/:id/decline — decline a group invite
+app.post('/notifications/invite/:id/decline', async (req, res) => {
+  try {
+    if (!req.session.user) return res.status(401).send('Login required');
+    const currentUserId = req.session.user.user_id;
+    const inviteId = Number(req.params.id);
+
+    const invite = await db.oneOrNone(
+      `SELECT 1 FROM group_invites WHERE invite_id = $1 AND invited_user_id = $2 AND status = 'pending'`,
+      [inviteId, currentUserId]
+    );
+
+    if (!invite) {
+      return res.redirect('/notifications?error=Invite+not+found+or+already+responded');
+    }
+
+    await db.none(
+      `UPDATE group_invites SET status = 'declined', responded_at = CURRENT_TIMESTAMP
+       WHERE invite_id = $1`,
+      [inviteId]
+    );
+
+    res.redirect('/notifications?success=Invite+declined');
+  } catch (err) {
+    console.error(err);
+    res.redirect('/notifications?error=Failed+to+decline+invite');
+  }
+});
+
+// POST /notifications/balance/:id/accept — manager accepts balance request from notifications
+app.post('/notifications/balance/:id/accept', async (req, res) => {
+  try {
+    if (!req.session.user) return res.status(401).send('Login required');
+    const currentUserId = req.session.user.user_id;
+    const requestId = Number(req.params.id);
+
+    const request = await db.oneOrNone(
+      `SELECT br.*, g.created_by AS manager_id
+       FROM balance_requests br
+       JOIN groups g ON br.group_id = g.group_id
+       WHERE br.request_id = $1 AND br.status = 'pending'`,
+      [requestId]
+    );
+
+    if (!request || request.manager_id !== currentUserId) {
+      return res.redirect('/notifications?error=Not+authorized+or+request+not+found');
+    }
+
+    const expense = await db.one(
+      `INSERT INTO expenses (description, amount, paid_by) VALUES ($1, $2, $3) RETURNING expense_id`,
+      [request.description, request.amount, request.requester_id]
+    );
+    await db.none(
+      `INSERT INTO expense_participants (expense_id, user_id, amount_owed) VALUES ($1, $2, $3)`,
+      [expense.expense_id, request.target_user_id, request.amount]
+    );
+    await db.none(
+      `UPDATE balance_requests SET status = 'accepted', reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $1
+       WHERE request_id = $2`,
+      [currentUserId, requestId]
+    );
+
+    res.redirect('/notifications?success=Balance+request+accepted');
+  } catch (err) {
+    console.error(err);
+    res.redirect('/notifications?error=Failed+to+accept+request');
+  }
+});
+
+// POST /notifications/balance/:id/reject — manager rejects balance request from notifications
+app.post('/notifications/balance/:id/reject', async (req, res) => {
+  try {
+    if (!req.session.user) return res.status(401).send('Login required');
+    const currentUserId = req.session.user.user_id;
+    const requestId = Number(req.params.id);
+
+    const request = await db.oneOrNone(
+      `SELECT br.*, g.created_by AS manager_id
+       FROM balance_requests br
+       JOIN groups g ON br.group_id = g.group_id
+       WHERE br.request_id = $1 AND br.status = 'pending'`,
+      [requestId]
+    );
+
+    if (!request || request.manager_id !== currentUserId) {
+      return res.redirect('/notifications?error=Not+authorized+or+request+not+found');
+    }
+
+    await db.none(
+      `UPDATE balance_requests SET status = 'rejected', reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $1
+       WHERE request_id = $2`,
+      [currentUserId, requestId]
+    );
+
+    res.redirect('/notifications?success=Balance+request+rejected');
+  } catch (err) {
+    console.error(err);
+    res.redirect('/notifications?error=Failed+to+reject+request');
+  }
+});
+
+// ── ADD BALANCE ────────────────────────────────────────────────────────────────
+
+// GET /money — render the Add Balance page
+app.get('/money', async (req, res) => {
+  try {
+    if (!req.session.user) return res.redirect('/login');
+    const currentUserId = req.session.user.user_id;
+
+    // Ensure balance_requests table exists (safe for running containers)
+    await db.none(`
+      CREATE TABLE IF NOT EXISTS balance_requests (
+        request_id SERIAL PRIMARY KEY,
+        group_id INT REFERENCES groups(group_id) ON DELETE CASCADE,
+        requester_id INT REFERENCES users(user_id) ON DELETE CASCADE,
+        target_user_id INT REFERENCES users(user_id) ON DELETE CASCADE,
+        amount NUMERIC(10,2) NOT NULL CHECK (amount > 0),
+        description VARCHAR(255) NOT NULL,
+        status VARCHAR(20) DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        reviewed_at TIMESTAMP,
+        reviewed_by INT REFERENCES users(user_id)
+      )
+    `);
+
+    // Groups the user manages (created_by = me), with their non-manager members
+    const managedGroups = await db.any(
+      `SELECT group_id, group_name FROM groups WHERE created_by = $1 ORDER BY group_name`,
+      [currentUserId]
+    );
+    for (const g of managedGroups) {
+      g.members = await db.any(
+        `SELECT u.user_id, u.full_name
+         FROM group_members gm JOIN users u ON gm.user_id = u.user_id
+         WHERE gm.group_id = $1 AND gm.user_id <> $2
+         ORDER BY u.full_name`,
+        [g.group_id, currentUserId]
+      );
+    }
+
+    // Groups the user is in but doesn't manage
+    const memberGroups = await db.any(
+      `SELECT g.group_id, g.group_name
+       FROM groups g JOIN group_members gm ON g.group_id = gm.group_id
+       WHERE gm.user_id = $1 AND g.created_by <> $1
+       ORDER BY g.group_name`,
+      [currentUserId]
+    );
+    for (const g of memberGroups) {
+      g.members = await db.any(
+        `SELECT u.user_id, u.full_name
+         FROM group_members gm JOIN users u ON gm.user_id = u.user_id
+         WHERE gm.group_id = $1 AND gm.user_id <> $2
+         ORDER BY u.full_name`,
+        [g.group_id, currentUserId]
+      );
+    }
+
+    // Pending requests for groups the current user manages
+    const pendingRequests = await db.any(
+      `SELECT br.request_id, br.amount, br.description,
+              to_char(br.created_at, 'Mon DD, YYYY') AS created_date,
+              g.group_name,
+              req.full_name AS requester_name,
+              tgt.full_name AS target_name
+       FROM balance_requests br
+       JOIN groups g ON br.group_id = g.group_id
+       JOIN users req ON br.requester_id = req.user_id
+       JOIN users tgt ON br.target_user_id = tgt.user_id
+       WHERE g.created_by = $1 AND br.status = 'pending'
+       ORDER BY br.created_at DESC`,
+      [currentUserId]
+    );
+
+    // Requests the current user submitted
+    const myRequests = await db.any(
+      `SELECT br.request_id, br.amount, br.description, br.status,
+              to_char(br.created_at, 'Mon DD, YYYY') AS created_date,
+              to_char(br.reviewed_at, 'Mon DD, YYYY') AS reviewed_date,
+              g.group_name,
+              tgt.full_name AS target_name,
+              rv.full_name AS reviewed_by_name
+       FROM balance_requests br
+       JOIN groups g ON br.group_id = g.group_id
+       JOIN users tgt ON br.target_user_id = tgt.user_id
+       LEFT JOIN users rv ON br.reviewed_by = rv.user_id
+       WHERE br.requester_id = $1
+       ORDER BY br.created_at DESC`,
+      [currentUserId]
+    );
+
+    res.render('pages/money', {
+      layout: 'main',
+      title: 'Add Balance',
+      moneyActive: true,
+      managedGroups,
+      memberGroups,
+      pendingRequests,
+      myRequests,
+      isManagerAnywhere: managedGroups.length > 0,
+      isMemberNotManager: memberGroups.length > 0,
+      hasPendingRequests: pendingRequests.length > 0,
+      hasMyRequests: myRequests.length > 0,
+      managedGroupsJson: JSON.stringify(managedGroups),
+      memberGroupsJson: JSON.stringify(memberGroups),
+      error: req.query.error || null,
+      success: req.query.success || null
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Error loading Add Balance page');
+  }
+});
+
+// POST /money/add — manager directly adds a balance to a roommate
+app.post('/money/add', async (req, res) => {
+  try {
+    if (!req.session.user) return res.status(401).send('Login required');
+    const currentUserId = req.session.user.user_id;
+    const groupId = Number(req.body.group_id);
+    const targetUserId = Number(req.body.user_id);
+    const amount = parseFloat(req.body.amount);
+    const description = req.body.description ? req.body.description.trim() : 'Balance added by manager';
+
+    if (!groupId || !targetUserId || isNaN(amount) || amount <= 0) {
+      return res.redirect('/money?error=Invalid+input');
+    }
+
+    const group = await db.oneOrNone(`SELECT created_by FROM groups WHERE group_id = $1`, [groupId]);
+    if (!group || group.created_by !== currentUserId) {
+      return res.redirect('/money?error=Only+the+group+manager+can+add+balances+directly');
+    }
+
+    const isMember = await db.oneOrNone(
+      `SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2`,
+      [groupId, targetUserId]
+    );
+    if (!isMember || targetUserId === currentUserId) {
+      return res.redirect('/money?error=Invalid+target+member');
+    }
+
+    const expense = await db.one(
+      `INSERT INTO expenses (description, amount, paid_by) VALUES ($1, $2, $3) RETURNING expense_id`,
+      [description, amount, currentUserId]
+    );
+    await db.none(
+      `INSERT INTO expense_participants (expense_id, user_id, amount_owed) VALUES ($1, $2, $3)`,
+      [expense.expense_id, targetUserId, amount]
+    );
+
+    res.redirect('/money?success=Balance+added+successfully');
+  } catch (err) {
+    console.error(err);
+    res.redirect('/money?error=Failed+to+add+balance');
+  }
+});
+
+// POST /money/request — non-manager submits a balance request
+app.post('/money/request', async (req, res) => {
+  try {
+    if (!req.session.user) return res.status(401).send('Login required');
+    const currentUserId = req.session.user.user_id;
+    const groupId = Number(req.body.group_id);
+    const targetUserId = Number(req.body.user_id);
+    const amount = parseFloat(req.body.amount);
+    const description = req.body.description ? req.body.description.trim() : '';
+
+    if (!groupId || !targetUserId || isNaN(amount) || amount <= 0 || !description) {
+      return res.redirect('/money?error=All+fields+are+required');
+    }
+
+    const group = await db.oneOrNone(`SELECT created_by FROM groups WHERE group_id = $1`, [groupId]);
+    if (!group) return res.redirect('/money?error=Group+not+found');
+    if (group.created_by === currentUserId) {
+      return res.redirect('/money?error=Managers+can+add+balances+directly');
+    }
+
+    const isMember = await db.oneOrNone(
+      `SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2`,
+      [groupId, currentUserId]
+    );
+    if (!isMember) return res.redirect('/money?error=You+are+not+in+this+group');
+
+    const isTargetMember = await db.oneOrNone(
+      `SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2`,
+      [groupId, targetUserId]
+    );
+    if (!isTargetMember || targetUserId === currentUserId) {
+      return res.redirect('/money?error=Invalid+target+member');
+    }
+
+    await db.none(
+      `INSERT INTO balance_requests (group_id, requester_id, target_user_id, amount, description)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [groupId, currentUserId, targetUserId, amount, description]
+    );
+
+    res.redirect('/money?success=Request+submitted!+Waiting+for+manager+approval');
+  } catch (err) {
+    console.error(err);
+    res.redirect('/money?error=Failed+to+submit+request');
+  }
+});
+
+// POST /money/requests/:id/accept — manager accepts a balance request
+app.post('/money/requests/:id/accept', async (req, res) => {
+  try {
+    if (!req.session.user) return res.status(401).send('Login required');
+    const currentUserId = req.session.user.user_id;
+    const requestId = Number(req.params.id);
+
+    const request = await db.oneOrNone(
+      `SELECT br.*, g.created_by AS manager_id
+       FROM balance_requests br
+       JOIN groups g ON br.group_id = g.group_id
+       WHERE br.request_id = $1 AND br.status = 'pending'`,
+      [requestId]
+    );
+
+    if (!request || request.manager_id !== currentUserId) {
+      return res.redirect('/money?error=Not+authorized+or+request+not+found');
+    }
+
+    const expense = await db.one(
+      `INSERT INTO expenses (description, amount, paid_by) VALUES ($1, $2, $3) RETURNING expense_id`,
+      [request.description, request.amount, request.requester_id]
+    );
+    await db.none(
+      `INSERT INTO expense_participants (expense_id, user_id, amount_owed) VALUES ($1, $2, $3)`,
+      [expense.expense_id, request.target_user_id, request.amount]
+    );
+    await db.none(
+      `UPDATE balance_requests
+       SET status = 'accepted', reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $1
+       WHERE request_id = $2`,
+      [currentUserId, requestId]
+    );
+
+    res.redirect('/money?success=Request+accepted+and+balance+updated');
+  } catch (err) {
+    console.error(err);
+    res.redirect('/money?error=Failed+to+accept+request');
+  }
+});
+
+// POST /money/requests/:id/reject — manager rejects a balance request
+app.post('/money/requests/:id/reject', async (req, res) => {
+  try {
+    if (!req.session.user) return res.status(401).send('Login required');
+    const currentUserId = req.session.user.user_id;
+    const requestId = Number(req.params.id);
+
+    const request = await db.oneOrNone(
+      `SELECT br.*, g.created_by AS manager_id
+       FROM balance_requests br
+       JOIN groups g ON br.group_id = g.group_id
+       WHERE br.request_id = $1 AND br.status = 'pending'`,
+      [requestId]
+    );
+
+    if (!request || request.manager_id !== currentUserId) {
+      return res.redirect('/money?error=Not+authorized+or+request+not+found');
+    }
+
+    await db.none(
+      `UPDATE balance_requests
+       SET status = 'rejected', reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $1
+       WHERE request_id = $2`,
+      [currentUserId, requestId]
+    );
+
+    res.redirect('/money?success=Request+rejected');
+  } catch (err) {
+    console.error(err);
+    res.redirect('/money?error=Failed+to+reject+request');
+  }
+});
+
+// ── ACCOUNT SETTINGS ───────────────────────────────────────────────────────────
+
+// GET /settings — render the settings page
+app.get('/settings', async (req, res) => {
+  try {
+    if (!req.session.user) return res.redirect('/login');
+    const user = await db.oneOrNone(
+      `SELECT user_id, full_name, email FROM users WHERE user_id = $1`,
+      [req.session.user.user_id]
+    );
+    if (!user) return res.redirect('/login');
+    res.render('pages/settings', {
+      layout: 'main',
+      title: 'Account Settings',
+      settingsActive: true,
+      user,
+      success: req.query.success || null,
+      error: req.query.error || null
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Error loading settings');
+  }
+});
+
+// POST /settings/name — update display name
+app.post('/settings/name', async (req, res) => {
+  try {
+    if (!req.session.user) return res.redirect('/login');
+    const name = req.body.full_name ? req.body.full_name.trim() : '';
+    if (!name) return res.redirect('/settings?error=Name+cannot+be+empty');
+
+    await db.none(
+      `UPDATE users SET full_name = $1 WHERE user_id = $2`,
+      [name, req.session.user.user_id]
+    );
+    req.session.user.full_name = name;
+    res.redirect('/settings?success=name');
+  } catch (err) {
+    console.error(err);
+    res.redirect('/settings?error=Failed+to+update+name');
+  }
+});
+
+// POST /settings/email — update email
+app.post('/settings/email', async (req, res) => {
+  try {
+    if (!req.session.user) return res.redirect('/login');
+    const email = req.body.email ? req.body.email.trim().toLowerCase() : '';
+    if (!email) return res.redirect('/settings?error=Email+cannot+be+empty');
+
+    const existing = await db.oneOrNone(
+      `SELECT user_id FROM users WHERE LOWER(email) = $1 AND user_id <> $2`,
+      [email, req.session.user.user_id]
+    );
+    if (existing) return res.redirect('/settings?error=That+email+is+already+in+use');
+
+    await db.none(
+      `UPDATE users SET email = $1 WHERE user_id = $2`,
+      [email, req.session.user.user_id]
+    );
+    req.session.user.email = email;
+    res.redirect('/settings?success=email');
+  } catch (err) {
+    console.error(err);
+    res.redirect('/settings?error=Failed+to+update+email');
+  }
+});
+
+// POST /settings/password — change password
+app.post('/settings/password', async (req, res) => {
+  try {
+    if (!req.session.user) return res.redirect('/login');
+    const { current_password, new_password, confirm_password } = req.body;
+
+    if (!current_password || !new_password || !confirm_password) {
+      return res.redirect('/settings?error=All+password+fields+are+required');
+    }
+    if (new_password !== confirm_password) {
+      return res.redirect('/settings?error=New+passwords+do+not+match');
+    }
+    if (new_password.length < 6) {
+      return res.redirect('/settings?error=Password+must+be+at+least+6+characters');
+    }
+
+    const user = await db.oneOrNone(
+      `SELECT password FROM users WHERE user_id = $1`,
+      [req.session.user.user_id]
+    );
+    const valid = await bcrypt.compare(current_password, user.password);
+    if (!valid) return res.redirect('/settings?error=Current+password+is+incorrect');
+
+    const hashed = await bcrypt.hash(new_password, 10);
+    await db.none(
+      `UPDATE users SET password = $1 WHERE user_id = $2`,
+      [hashed, req.session.user.user_id]
+    );
+    res.redirect('/settings?success=password');
+  } catch (err) {
+    console.error(err);
+    res.redirect('/settings?error=Failed+to+update+password');
   }
 });
 

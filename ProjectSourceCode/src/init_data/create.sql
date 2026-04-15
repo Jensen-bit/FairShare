@@ -1,3 +1,5 @@
+DROP TABLE IF EXISTS group_invites;
+DROP TABLE IF EXISTS balance_requests;
 DROP TABLE IF EXISTS expense_participants;
 DROP TABLE IF EXISTS expenses;
 DROP TABLE IF EXISTS group_members;
@@ -60,6 +62,30 @@ CREATE TABLE group_members (
     UNIQUE(group_id, user_id)
 );
 
+CREATE TABLE group_invites (
+    invite_id SERIAL PRIMARY KEY,
+    group_id INT REFERENCES groups(group_id) ON DELETE CASCADE,
+    invited_user_id INT REFERENCES users(user_id) ON DELETE CASCADE,
+    invited_by INT REFERENCES users(user_id) ON DELETE SET NULL,
+    status VARCHAR(20) DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    responded_at TIMESTAMP,
+    UNIQUE(group_id, invited_user_id)
+);
+
+CREATE TABLE balance_requests (
+    request_id SERIAL PRIMARY KEY,
+    group_id INT REFERENCES groups(group_id) ON DELETE CASCADE,
+    requester_id INT REFERENCES users(user_id) ON DELETE CASCADE,
+    target_user_id INT REFERENCES users(user_id) ON DELETE CASCADE,
+    amount NUMERIC(10,2) NOT NULL CHECK (amount > 0),
+    description VARCHAR(255) NOT NULL,
+    status VARCHAR(20) DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    reviewed_at TIMESTAMP,
+    reviewed_by INT REFERENCES users(user_id)
+);
+
 -- password for all users is 'password' (bcrypt hashed)
 INSERT INTO users (full_name, email, password) VALUES
 ('Brennan Long',  'brennan@test.com',   '$2b$10$DF1tG1G96APPC/oQQS6LTOsXsubwUicvuX8t3kPjtTr1WnGfQj1RW'),
@@ -86,9 +112,6 @@ INSERT INTO group_members (group_id, user_id) VALUES
 (1, 1),
 (1, 2),
 (1, 3),
-<<<<<<< HEAD
-(1, 4);
-=======
 (1, 4);
 
 -- test data
@@ -97,4 +120,3 @@ INSERT INTO chores (description, assigned_to) VALUES
 ('Wipe down the counters', 2),
 ('Vacuum the living room', 3),
 ('Clean the main bathroom', 4);
->>>>>>> e9dbfe247e3172d7beb73e400132b0fdfed3bc7a
