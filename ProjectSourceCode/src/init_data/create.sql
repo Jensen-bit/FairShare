@@ -40,6 +40,13 @@ CREATE TABLE group_members (
     UNIQUE(group_id, user_id)
 );
 
+CREATE TABLE group_invites (
+    token VARCHAR(255) PRIMARY KEY,
+    group_id INT REFERENCES groups(group_id) ON DELETE CASCADE,
+    email VARCHAR(120) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE announcements (
     announcement_id SERIAL PRIMARY KEY,
     message VARCHAR(500) NOT NULL,

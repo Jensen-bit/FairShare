@@ -1,10 +1,11 @@
+const crypto = require('crypto');
 const express = require('express');
 const bodyParser = require('body-parser');
 const pgp = require('pg-promise')();
 const session = require('express-session');
 const exphbs = require('express-handlebars');
 const bcrypt = require('bcryptjs');
-const { sendExpenseEmail } = require('./src/services/emailService'); 
+const { sendExpenseEmail, sendGroupInviteEmail } = require('./src/services/emailService'); 
 require('dotenv').config();
 
 const app = express();
@@ -147,31 +148,29 @@ app.get('/register', (req, res) => {
 });
 
 app.post('/register', async (req, res) => {
-  const username = req.body.username ? req.body.username.trim() : '';
-  const password = req.body.password ? req.body.password.trim() : '';
+  const username = req.body.username || req.body.full_name || req.body.name || '';
+  const email = req.body.email || '';
+  const password = req.body.password || '';
 
-  if (!username || !password) {
+  if (!username || !email || !password) {
     return res.status(400).json({ status: 'error', message: 'Name, email, and password are required.' });
   }
 
   try {
-    const hash = await bcrypt.hash(password, 10);
+    const hash = await bcrypt.hash(password.trim(), 10);
 
     await db.none(
       `
       INSERT INTO users(full_name, email, password)
       VALUES($1, $2, $3)
-      ON CONFLICT (email) DO UPDATE
-      SET full_name = EXCLUDED.full_name,
-          password = EXCLUDED.password
       `,
-      [username, `${username}@fairshare.local`, hash]
+      [username.trim(), email.trim().toLowerCase(), hash]
     );
 
     return res.status(200).json({ status: 'success', message: 'Success' });
   } catch (err) {
-    console.error(err);
-    return res.status(400).json({ status: 'error', message: 'Unable to register user.' });
+    console.error("Registration Error:", err);
+    return res.status(400).json({ status: 'error', message: 'Unable to register user. Email may already be in use.' });
   }
 });
 
@@ -801,33 +800,72 @@ app.post('/groups/:groupId/add', async (req, res) => {
       return res.redirect(`/groups?error=Email+is+required`);
     }
 
-    const user = await db.oneOrNone(
-      `SELECT user_id, full_name FROM users WHERE LOWER(email) = $1`,
-      [email]
+    const group = await db.oneOrNone('SELECT group_name FROM groups WHERE group_id = $1', [groupId]);
+    if (!group) return res.redirect(`/groups?error=Group+not+found`);
+
+    const existingMember = await db.oneOrNone(
+      `SELECT gm.id FROM group_members gm 
+       JOIN users u ON gm.user_id = u.user_id 
+       WHERE gm.group_id = $1 AND u.email = $2`,
+      [groupId, email]
     );
 
-    if (!user) {
-      return res.redirect(`/groups?error=No+user+found+with+that+email`);
-    }
-
-    const existing = await db.oneOrNone(
-      `SELECT * FROM group_members WHERE group_id = $1 AND user_id = $2`,
-      [groupId, user.user_id]
-    );
-
-    if (existing) {
+    if (existingMember) {
       return res.redirect(`/groups?error=That+person+is+already+in+this+group`);
     }
 
+    // Generate a secure, random 32-character token
+    const token = crypto.randomBytes(16).toString('hex');
+
     await db.none(
-      `INSERT INTO group_members (group_id, user_id) VALUES ($1, $2)`,
-      [groupId, user.user_id]
+      `INSERT INTO group_invites (token, group_id, email) VALUES ($1, $2, $3)`,
+      [token, groupId, email]
     );
 
-    res.redirect('/groups?success=Member+added+to+group');
+    // Clickable link (Change path to real domain when deployed)
+    const inviteLink = `http://localhost:3000/groups/join/${token}`;
+
+    await sendGroupInviteEmail(email, req.session.user.full_name, group.group_name, inviteLink);
+
+    res.redirect('/groups?success=Invitation+email+sent!');
   } catch (err) {
     console.error(err);
-    res.status(500).send('Error adding member');
+    res.status(500).send('Error sending invitation');
+  }
+});
+
+app.get('/groups/join/:token', async (req, res) => {
+  try {
+    if (!req.session.user) {
+      // Redirect them back after they log in
+      return res.redirect('/login?error=Please+log+in+to+accept+your+invitation.');
+    }
+
+    const token = req.params.token;
+    const currentUserId = req.session.user.user_id;
+    const currentUserEmail = req.session.user.email;
+
+    const invite = await db.oneOrNone('SELECT * FROM group_invites WHERE token = $1', [token]);
+
+    if (!invite) {
+      return res.redirect('/groups?error=Invalid+or+expired+invitation+link.');
+    }
+
+    if (invite.email !== currentUserEmail) {
+      return res.redirect('/groups?error=This+invitation+was+sent+to+a+different+email+address.');
+    }
+
+    await db.none(
+      `INSERT INTO group_members (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [invite.group_id, currentUserId]
+    );
+
+    await db.none('DELETE FROM group_invites WHERE token = $1', [token]);
+
+    res.redirect('/groups?success=You+have+successfully+joined+the+group!');
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Error joining group');
   }
 });
 

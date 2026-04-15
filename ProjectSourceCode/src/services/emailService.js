@@ -29,4 +29,22 @@ const sendExpenseEmail = async (targetEmail, expenseAmount, addedBy, description
     }
 };
 
-module.exports = { sendExpenseEmail };
+const sendGroupInviteEmail = async (targetEmail, inviterName, groupName, inviteLink) => {
+    const mailOptions = {
+        from: process.env.EMAIL_USER,
+        to: targetEmail,
+        subject: `${inviterName} invited you to join "${groupName}" on FairShare!`,
+        text: `Hello!\n\n${inviterName} has invited you to join their group "${groupName}" on FairShare.\n\nClick the link below to accept the invitation and join the group:\n${inviteLink}\n\nIf you don't have an account yet, please register using this email address first.`
+    };
+
+    try {
+        await transporter.sendMail(mailOptions);
+        console.log(`Invite email successfully sent to ${targetEmail}`);
+        return true;
+    } catch (error) {
+        console.error('Invite email failed to send:', error);
+        return false;
+    }
+};
+
+module.exports = { sendExpenseEmail, sendGroupInviteEmail };
