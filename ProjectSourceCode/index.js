@@ -191,7 +191,7 @@ app.post('/add-expense', async (req, res) => {
                 WHERE gm.group_id = $1 AND u.user_id != $2;
             `;
             const roommates = await t.any(emailQuery, [group_id, payerId]);
-            const emailPromises = roommates.map(rm => sendExpenseEmail(rm.email, amount, payerName, note));
+            const emailPromises = roommates.map(rm => sendExpenseEmail(rm.email, amount, payerName, '', note));
             await Promise.all(emailPromises);
         });
         res.status(200).json({ message: "Expense added and balances updated!" });
@@ -648,6 +648,7 @@ app.post('/money/add', async (req, res) => {
   try {
     if (!req.session.user) return res.status(401).send('Login required');
     const currentUserId = req.session.user.user_id;
+    const payerName = req.session.user.full_name; // Grab the manager's name
     const groupId = Number(req.body.group_id);
     const targetUserId = Number(req.body.user_id);
     const amount = parseFloat(req.body.amount);
@@ -663,6 +664,12 @@ app.post('/money/add', async (req, res) => {
 
     const expense = await db.one(`INSERT INTO expenses (description, amount, paid_by, group_id, category) VALUES ($1, $2, $3, $4, 'Balance Update') RETURNING expense_id`, [description, amount, currentUserId, groupId]);
     await db.none(`INSERT INTO expense_participants (expense_id, user_id, amount_owed) VALUES ($1, $2, $3)`, [expense.expense_id, targetUserId, amount]);
+
+    // --- NEW EMAIL LOGIC ---
+    const targetUser = await db.oneOrNone(`SELECT email FROM users WHERE user_id = $1`, [targetUserId]);
+    if (targetUser && targetUser.email) {
+      await sendExpenseEmail(targetUser.email, amount, payerName, 'Balance Update', description);
+    }
 
     res.redirect('/money?success=Balance+added+successfully');
   } catch (err) {
@@ -705,6 +712,7 @@ app.post('/money/requests/:id/accept', async (req, res) => {
   try {
     if (!req.session.user) return res.status(401).send('Login required');
     const currentUserId = req.session.user.user_id;
+    const managerName = req.session.user.full_name; // Grab the manager's name
     const requestId = Number(req.params.id);
 
     const request = await db.oneOrNone(`SELECT br.*, g.created_by AS manager_id FROM balance_requests br JOIN groups g ON br.group_id = g.group_id WHERE br.request_id = $1 AND br.status = 'pending'`, [requestId]);
@@ -714,10 +722,42 @@ app.post('/money/requests/:id/accept', async (req, res) => {
     await db.none(`INSERT INTO expense_participants (expense_id, user_id, amount_owed) VALUES ($1, $2, $3)`, [expense.expense_id, request.target_user_id, request.amount]);
     await db.none(`UPDATE balance_requests SET status = 'accepted', reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $1 WHERE request_id = $2`, [currentUserId, requestId]);
 
+    // --- NEW EMAIL LOGIC ---
+    const targetUser = await db.oneOrNone(`SELECT email FROM users WHERE user_id = $1`, [request.target_user_id]);
+    if (targetUser && targetUser.email) {
+      await sendExpenseEmail(targetUser.email, request.amount, managerName, 'Request Accepted', request.description);
+    }
+
     res.redirect('/money?success=Request+accepted+and+balance+updated');
   } catch (err) {
     console.error(err);
     res.redirect('/money?error=Failed+to+accept+request');
+  }
+});
+
+app.post('/notifications/balance/:id/accept', async (req, res) => {
+  try {
+    if (!req.session.user) return res.status(401).send('Login required');
+    const currentUserId = req.session.user.user_id;
+    const managerName = req.session.user.full_name; // Grab the manager's name
+    const requestId = Number(req.params.id);
+
+    const request = await db.oneOrNone(`SELECT br.*, g.created_by AS manager_id FROM balance_requests br JOIN groups g ON br.group_id = g.group_id WHERE br.request_id = $1 AND br.status = 'pending'`, [requestId]);
+    if (!request || request.manager_id !== currentUserId) return res.redirect('/notifications?error=Not+authorized+or+request+not+found');
+
+    const expense = await db.one(`INSERT INTO expenses (description, amount, paid_by, group_id, category) VALUES ($1, $2, $3, $4, 'Balance Update') RETURNING expense_id`, [request.description, request.amount, request.requester_id, request.group_id]);
+    await db.none(`INSERT INTO expense_participants (expense_id, user_id, amount_owed) VALUES ($1, $2, $3)`, [expense.expense_id, request.target_user_id, request.amount]);
+    await db.none(`UPDATE balance_requests SET status = 'accepted', reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $1 WHERE request_id = $2`, [currentUserId, requestId]);
+
+    const targetUser = await db.oneOrNone(`SELECT email FROM users WHERE user_id = $1`, [request.target_user_id]);
+    if (targetUser && targetUser.email) {
+      await sendExpenseEmail(targetUser.email, request.amount, managerName, 'Request Accepted', request.description);
+    }
+
+    res.redirect('/notifications?success=Balance+request+accepted');
+  } catch (err) {
+    console.error(err);
+    res.redirect('/notifications?error=Failed+to+accept+request');
   }
 });
 
