@@ -71,7 +71,7 @@ CREATE TABLE expenses (
     description VARCHAR(255) NOT NULL, 
     amount NUMERIC(10,2) NOT NULL CHECK (amount > 0),
     paid_by INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-    group_id INT NOT NULL REFERENCES roommate_groups(group_id) ON DELETE CASCADE, 
+    group_id INT NOT NULL REFERENCES groups(group_id) ON DELETE CASCADE,
     category VARCHAR(50),
     expense_date DATE DEFAULT CURRENT_DATE, 
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

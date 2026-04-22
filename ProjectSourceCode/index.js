@@ -83,6 +83,22 @@ if (dbConfig.host !== 'db' && process.env.POSTGRES_SSL !== 'false') {
 
 const db = pgp(dbConfig);
 
+async function ensureLegacyExpenseGroup(groupId, runner = db) {
+  try {
+    await runner.none(
+      `INSERT INTO roommate_groups (group_id, group_name)
+       SELECT g.group_id, g.group_name
+       FROM groups g
+       WHERE g.group_id = $1
+       ON CONFLICT (group_id) DO NOTHING`,
+      [groupId]
+    );
+  } catch (err) {
+    if (err && err.code === '42P01') return;
+    throw err;
+  }
+}
+
 if (process.env.NODE_ENV === 'test') {
   app.use((req, res, next) => {
     if (!req.session.user) {
@@ -180,6 +196,7 @@ app.post('/add-expense', async (req, res) => {
 
     try {
         await db.tx(async t => {
+            await ensureLegacyExpenseGroup(group_id, t);
             const expense = await t.one(
                 `INSERT INTO expenses (amount, description, category, expense_date, paid_by, group_id) 
                  VALUES ($1, $2, $3, $4, $5, $6) RETURNING expense_id`,
@@ -475,6 +492,7 @@ app.post('/groups/create', async (req, res) => {
 
     if (!groupName) return res.redirect('/groups?error=Group+name+is+required');
     const newGroup = await db.one(`INSERT INTO groups (group_name, created_by) VALUES ($1, $2) RETURNING group_id`, [groupName, currentUserId]);
+    await ensureLegacyExpenseGroup(newGroup.group_id);
     await db.none(`INSERT INTO group_members (group_id, user_id) VALUES ($1, $2)`, [newGroup.group_id, currentUserId]);
     res.redirect('/groups?success=Group+created+successfully');
   } catch (err) {
@@ -627,6 +645,7 @@ app.post('/notifications/balance/:id/accept', async (req, res) => {
     const request = await db.oneOrNone(`SELECT br.*, g.created_by AS manager_id FROM balance_requests br JOIN groups g ON br.group_id = g.group_id WHERE br.request_id = $1 AND br.status = 'pending'`, [requestId]);
     if (!request || request.manager_id !== currentUserId) return res.redirect('/notifications?error=Not+authorized+or+request+not+found');
 
+    await ensureLegacyExpenseGroup(request.group_id);
     const expense = await db.one(`INSERT INTO expenses (description, amount, paid_by, group_id, category) VALUES ($1, $2, $3, $4, 'Balance Update') RETURNING expense_id`, [request.description, request.amount, request.requester_id, request.group_id]);
     await db.none(`INSERT INTO expense_participants (expense_id, user_id, amount_owed) VALUES ($1, $2, $3)`, [expense.expense_id, request.target_user_id, request.amount]);
     await db.none(`UPDATE balance_requests SET status = 'accepted', reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $1 WHERE request_id = $2`, [currentUserId, requestId]);
@@ -698,6 +717,7 @@ app.post('/money/add', async (req, res) => {
     const isMember = await db.oneOrNone(`SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2`, [groupId, targetUserId]);
     if (!isMember || targetUserId === currentUserId) return res.redirect('/money?error=Invalid+target+member');
 
+    await ensureLegacyExpenseGroup(groupId);
     const expense = await db.one(`INSERT INTO expenses (description, amount, paid_by, group_id, category) VALUES ($1, $2, $3, $4, 'Balance Update') RETURNING expense_id`, [description, amount, currentUserId, groupId]);
     await db.none(`INSERT INTO expense_participants (expense_id, user_id, amount_owed) VALUES ($1, $2, $3)`, [expense.expense_id, targetUserId, amount]);
 
@@ -754,6 +774,7 @@ app.post('/money/requests/:id/accept', async (req, res) => {
     const request = await db.oneOrNone(`SELECT br.*, g.created_by AS manager_id FROM balance_requests br JOIN groups g ON br.group_id = g.group_id WHERE br.request_id = $1 AND br.status = 'pending'`, [requestId]);
     if (!request || request.manager_id !== currentUserId) return res.redirect('/money?error=Not+authorized+or+request+not+found');
 
+    await ensureLegacyExpenseGroup(request.group_id);
     const expense = await db.one(`INSERT INTO expenses (description, amount, paid_by, group_id, category) VALUES ($1, $2, $3, $4, 'Balance Update') RETURNING expense_id`, [request.description, request.amount, request.requester_id, request.group_id]);
     await db.none(`INSERT INTO expense_participants (expense_id, user_id, amount_owed) VALUES ($1, $2, $3)`, [expense.expense_id, request.target_user_id, request.amount]);
     await db.none(`UPDATE balance_requests SET status = 'accepted', reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $1 WHERE request_id = $2`, [currentUserId, requestId]);
@@ -781,6 +802,7 @@ app.post('/notifications/balance/:id/accept', async (req, res) => {
     const request = await db.oneOrNone(`SELECT br.*, g.created_by AS manager_id FROM balance_requests br JOIN groups g ON br.group_id = g.group_id WHERE br.request_id = $1 AND br.status = 'pending'`, [requestId]);
     if (!request || request.manager_id !== currentUserId) return res.redirect('/notifications?error=Not+authorized+or+request+not+found');
 
+    await ensureLegacyExpenseGroup(request.group_id);
     const expense = await db.one(`INSERT INTO expenses (description, amount, paid_by, group_id, category) VALUES ($1, $2, $3, $4, 'Balance Update') RETURNING expense_id`, [request.description, request.amount, request.requester_id, request.group_id]);
     await db.none(`INSERT INTO expense_participants (expense_id, user_id, amount_owed) VALUES ($1, $2, $3)`, [expense.expense_id, request.target_user_id, request.amount]);
     await db.none(`UPDATE balance_requests SET status = 'accepted', reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $1 WHERE request_id = $2`, [currentUserId, requestId]);
