@@ -1,4 +1,3 @@
-<!-- Group Filter -->
 <div class="row">
   <div class="col-xs-12">
     <div class="box box-info">
@@ -32,14 +31,13 @@
   </div>
 </div>
 
-<!-- Info Boxes -->
 <div class="row">
   <div class="col-md-4 col-sm-6 col-xs-12">
     <div class="info-box bg-green">
       <span class="info-box-icon"><i class="fa fa-arrow-down"></i></span>
       <div class="info-box-content">
         <span class="info-box-text">Total Owed to You</span>
-        <span class="info-box-number" id="total-owed-to-you">—</span>
+        <span class="info-box-number" id="total-owed-to-you">$0.00</span>
       </div>
     </div>
   </div>
@@ -48,7 +46,7 @@
       <span class="info-box-icon"><i class="fa fa-arrow-up"></i></span>
       <div class="info-box-content">
         <span class="info-box-text">Total You Owe</span>
-        <span class="info-box-number" id="total-you-owe">—</span>
+        <span class="info-box-number" id="total-you-owe">$0.00</span>
       </div>
     </div>
   </div>
@@ -64,7 +62,6 @@
 </div>
 
 <div class="row">
-  <!-- Roommate Balances -->
   <div class="col-md-5">
     <div class="box box-primary">
       <div class="box-header with-border">
@@ -97,54 +94,54 @@
       </div>
     </div>
 
-<div class="box box-info">
-  <div class="box-header with-border">
-    <h3 class="box-title"><i class="fa fa-bullhorn"></i> Bulletin Board</h3>
-  </div>
-  <div class="box-body">
-    <form action="/announcements/add" method="POST" style="margin-bottom: 20px;">
-      <div class="input-group">
-        <input type="text" name="message" class="form-control" placeholder="Post an update for the house..." required>
-        <span class="input-group-btn">
-          <button type="submit" class="btn btn-info btn-flat">Post</button>
-        </span>
+    <div class="box box-info">
+      <div class="box-header with-border">
+        <h3 class="box-title"><i class="fa fa-bullhorn"></i> Bulletin Board</h3>
       </div>
-    </form>
-
-    {{#if announcements.length}}
-      <ul class="timeline">
-        {{#each announcements}}
-        <li>
-          <i class="fa fa-envelope bg-blue"></i>
-          <div class="timeline-item">
-            <span class="time"><i class="fa fa-clock-o"></i> {{date_posted}}</span>
-            <h3 class="timeline-header"><strong>{{author_name}}</strong> posted:</h3>
-            <div class="timeline-body">
-              {{message}}
-            </div>
-            
-            {{#if (eq author_id ../currentUserId)}}
-            <div class="timeline-footer">
-              <form action="/announcements/{{announcement_id}}/delete" method="POST">
-                <button type="submit" class="btn btn-danger btn-xs btn-flat">Delete</button>
-              </form>
-            </div>
-            {{/if}}
+      <div class="box-body">
+        <form action="/announcements/add" method="POST" style="margin-bottom: 20px;">
+          <div class="input-group">
+            <input type="text" name="message" class="form-control" required>
+            <span class="input-group-btn">
+              <button type="submit" class="btn btn-info btn-flat">Post</button>
+            </span>
           </div>
-        </li>
-        {{/each}}
-      </ul>
-    {{else}}
-      <p class="text-muted text-center">No announcements yet.</p>
-    {{/if}}
+        </form>
+
+        {{#if announcements.length}}
+          <ul class="timeline">
+            {{#each announcements}}
+            <li>
+              <i class="fa fa-envelope bg-blue"></i>
+              <div class="timeline-item">
+                <span class="time"><i class="fa fa-clock-o"></i> {{date_posted}}</span>
+                <h3 class="timeline-header"><strong>{{author_name}}</strong> posted:</h3>
+                <div class="timeline-body">
+                  {{message}}
+                </div>
+                
+                {{#if (eq author_id ../currentUserId)}}
+                <div class="timeline-footer">
+                  <form action="/announcements/{{announcement_id}}/delete" method="POST">
+                    <button type="submit" class="btn btn-danger btn-xs btn-flat">Delete</button>
+                  </form>
+                </div>
+                {{/if}}
+              </div>
+            </li>
+            {{/each}}
+          </ul>
+        {{else}}
+          <p class="text-muted text-center">No announcements yet.</p>
+        {{/if}}
+      </div>
+    </div>
   </div>
-</div>
-  </div>
-  <!-- Outstanding Shares -->
+  
   <div class="col-md-7">
     <div class="box box-warning">
       <div class="box-header with-border">
-        <h3 class="box-title"><i class="fa fa-clock-o"></i> Outstanding Shares</h3>
+        <h3 class="box-title"><i class="fa fa-clock-o"></i> Outstanding Balances</h3>
       </div>
       <div class="box-body no-padding">
         {{#if unpaidShares.length}}
@@ -154,7 +151,6 @@
               <th>Description</th>
               <th>Who Owes</th>
               <th>Amount</th>
-              <th>Action</th>
             </tr>
           </thead>
           <tbody>
@@ -163,20 +159,13 @@
               <td>{{description}}</td>
               <td>{{owes_user}}</td>
               <td><span class="label label-danger">${{amount_owed}}</span></td>
-              <td>
-                <form action="/mark-paid/{{participant_id}}" method="POST" style="display:inline;">
-                  <button type="submit" class="btn btn-xs btn-success btn-flat">
-                    <i class="fa fa-check"></i> Mark Paid
-                  </button>
-                </form>
-              </td>
             </tr>
             {{/each}}
           </tbody>
         </table>
         {{else}}
         <p class="text-muted text-center" style="padding:20px;">
-          <i class="fa fa-check-circle fa-3x"></i><br>No outstanding shares.
+          <i class="fa fa-check-circle fa-3x"></i><br>No outstanding balances.
         </p>
         {{/if}}
       </div>
