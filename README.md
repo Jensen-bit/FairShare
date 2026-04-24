@@ -18,3 +18,7 @@ A web application built to streamline shared living for college students.
 - **Backend:** Node.js
 - **Database:** PostgreSQL
 - **Environment:** Docker
+
+
+## Live Link to FairShare: 
+- https://fairshare-asop.onrender.com/
