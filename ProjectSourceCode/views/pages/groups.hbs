@@ -67,7 +67,7 @@
             <div class="form-group">
               <div class="input-group">
                 <span class="input-group-addon"><i class="fa fa-envelope"></i></span>
-                <input type="email" name="email" class="form-control" placeholder="Invite by email..." style="width:250px;">
+                <input type="email" name="email" class="form-control" placeholder="Invite by email...">
               </div>
             </div>
             <button type="submit" class="btn btn-success btn-flat" style="margin-left:8px;">
@@ -79,44 +79,48 @@
           </p>
 
           <!-- Members table -->
-          <table class="table table-hover table-condensed" style="margin-bottom:0;">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Email</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {{#each members}}
-              <tr>
-                <td><i class="fa fa-user-circle text-muted"></i> <strong style="margin-left:4px;">{{full_name}}</strong></td>
-                <td><small class="text-muted">{{email}}</small></td>
-                <td>
-                  <form action="/groups/{{../group_id}}/remove/{{user_id}}" method="POST" style="display:inline;"
-                        onsubmit="return confirm('Remove {{full_name}} from this group?')">
-                    <button type="submit" class="btn btn-xs btn-danger btn-flat">
-                      <i class="fa fa-user-times"></i> Remove
-                    </button>
-                  </form>
-                </td>
-              </tr>
-              {{/each}}
-            </tbody>
-          </table>
+          <div class="table-responsive">
+            <table class="table table-hover table-condensed" style="margin-bottom:0;">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {{#each members}}
+                <tr>
+                  <td><i class="fa fa-user-circle text-muted"></i> <strong style="margin-left:4px;">{{full_name}}</strong></td>
+                  <td><small class="text-muted">{{email}}</small></td>
+                  <td>
+                    <form action="/groups/{{../group_id}}/remove/{{user_id}}" method="POST" style="display:inline;"
+                          onsubmit="return confirm('Remove {{full_name}} from this group?')">
+                      <button type="submit" class="btn btn-xs btn-danger btn-flat">
+                        <i class="fa fa-user-times"></i> Remove
+                      </button>
+                    </form>
+                  </td>
+                </tr>
+                {{/each}}
+              </tbody>
+            </table>
+          </div>
         </div>
 
         <div class="box-footer">
           {{#if (eq created_by ../currentUserId)}}
-          <form action="/groups/{{group_id}}/delete" method="POST" style="display:inline;"
-                onsubmit="return confirm('Delete group {{group_name}}? This cannot be undone.')">
-            <button type="submit" class="btn btn-danger btn-flat btn-sm">
-              <i class="fa fa-trash"></i> Delete Group
-            </button>
-          </form>
-          <a href="/money" class="btn btn-warning btn-flat btn-sm" style="margin-left:6px;">
-            <i class="fa fa-dollar"></i> Add Balance
-          </a>
+          <div class="fs-footer-actions">
+            <form action="/groups/{{group_id}}/delete" method="POST" style="display:inline;"
+                  onsubmit="return confirm('Delete group {{group_name}}? This cannot be undone.')">
+              <button type="submit" class="btn btn-danger btn-flat btn-sm">
+                <i class="fa fa-trash"></i> Delete Group
+              </button>
+            </form>
+            <a href="/money" class="btn btn-warning btn-flat btn-sm" style="margin-left:6px;">
+              <i class="fa fa-dollar"></i> Add Balance
+            </a>
+          </div>
           {{else}}
           <a href="/money" class="btn btn-primary btn-flat btn-sm">
             <i class="fa fa-paper-plane"></i> Request a Balance
