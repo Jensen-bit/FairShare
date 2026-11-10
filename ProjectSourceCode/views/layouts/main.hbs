@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/admin-lte/2.4.18/css/AdminLTE.min.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/admin-lte/2.4.18/css/skins/skin-blue.min.css">
   <link rel="stylesheet" href="/dark-mode.css">
+  <link rel="stylesheet" href="/mobile.css">
 </head>
 <body class="hold-transition skin-blue sidebar-mini">
 <script>
@@ -127,6 +128,35 @@
   <footer class="main-footer">
     <strong>FairShare</strong> &mdash; Split expenses fairly.
   </footer>
+
+  {{#if currentUser}}
+  <!-- Mobile bottom navigation — hidden on desktop via CSS -->
+  <nav class="fs-bottom-nav" aria-label="Primary navigation">
+    <a href="/balances" class="fs-bottom-nav__item {{#if balancesActive}}active{{/if}}" aria-label="Balances">
+      <i class="fa fa-balance-scale" aria-hidden="true"></i>
+      <span>Balances</span>
+    </a>
+    <a href="/pay-balance" class="fs-bottom-nav__item {{#if payBalanceActive}}active{{/if}}" aria-label="Pay balances">
+      <i class="fa fa-credit-card" aria-hidden="true"></i>
+      <span>Pay</span>
+    </a>
+    <a href="/money" class="fs-bottom-nav__item {{#if moneyActive}}active{{/if}}" aria-label="Add balance">
+      <i class="fa fa-plus-circle" aria-hidden="true"></i>
+      <span>Add</span>
+    </a>
+    <a href="/notifications" class="fs-bottom-nav__item {{#if notificationsActive}}active{{/if}}" aria-label="Notifications{{#if notificationCount}} ({{notificationCount}} pending){{/if}}">
+      <i class="fa fa-bell" aria-hidden="true"></i>
+      <span>Alerts</span>
+      {{#if notificationCount}}
+      <span class="fs-bottom-nav__badge" aria-hidden="true">{{notificationCount}}</span>
+      {{/if}}
+    </a>
+    <a href="/groups" class="fs-bottom-nav__item {{#if groupsActive}}active{{/if}}" aria-label="Groups">
+      <i class="fa fa-users" aria-hidden="true"></i>
+      <span>Groups</span>
+    </a>
+  </nav>
+  {{/if}}
 
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/2.2.3/jquery.min.js"></script>

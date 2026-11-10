@@ -30,7 +30,8 @@ app.set('view engine', 'hbs');
 app.set('views', __dirname + '/views');
 
 app.get('/dark-mode.css', (req, res) => res.sendFile(__dirname + '/dark-mode.css'));
-app.get('/dark-mode.js', (req, res) => res.sendFile(__dirname + '/dark-mode.js'));
+app.get('/dark-mode.js',  (req, res) => res.sendFile(__dirname + '/dark-mode.js'));
+app.get('/mobile.css',    (req, res) => res.sendFile(__dirname + '/mobile.css'));
 
 app.use(
   session({
